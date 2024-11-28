@@ -42,25 +42,26 @@ install_dependencies() {
 install_shadowsocks() {
     echo -e "${GREEN}[2/5] 正在安装 Shadowsocks...${NC}"
     
-    # 使用 --break-system-packages 参数安装
-    pip3 install --break-system-packages shadowsocks || {
-        echo -e "${YELLOW}尝试替代安装方法...${NC}"
-        python3 -m pip install --user shadowsocks || handle_error "Shadowsocks 安装失败"
-    }
+    # 创建虚拟环境
+    echo -e "${YELLOW}创建 Python 虚拟环境...${NC}"
+    python3 -m venv /opt/shadowsocks-env || handle_error "创建虚拟环境失败"
     
-    # 添加到 PATH
-    export PATH=$PATH:$HOME/.local/bin:/usr/local/bin
+    # 激活虚拟环境
+    source /opt/shadowsocks-env/bin/activate || handle_error "激活虚拟环境失败"
+    
+    # 在虚拟环境中安装 shadowsocks
+    pip install shadowsocks || handle_error "Shadowsocks 安装失败"
+    
+    # 创建符号链接
+    ln -sf /opt/shadowsocks-env/bin/ssserver /usr/local/bin/ssserver || handle_error "创建符号链接失败"
     
     # 验证安装
     if ! command -v ssserver &> /dev/null; then
-        # 尝试找到 ssserver 的位置
-        SSSERVER_PATH=$(find / -name ssserver 2>/dev/null | head -n 1)
-        if [ -n "$SSSERVER_PATH" ]; then
-            ln -sf "$SSSERVER_PATH" /usr/local/bin/ssserver
-        else
-            handle_error "Shadowsocks 安装失败，ssserver 命令不可用"
-        fi
+        handle_error "Shadowsocks 安装失败，ssserver 命令不可用"
     fi
+    
+    # 退出虚拟环境
+    deactivate
 }
 
 # 创建配置文件
@@ -88,7 +89,7 @@ EOF
 fix_openssl() {
     echo -e "${GREEN}[4/5] 正在修复 OpenSSL 问题...${NC}"
     # 查找 openssl.py 文件
-    OPENSSL_FILE=$(find / -name openssl.py | grep shadowsocks/crypto/openssl.py 2>/dev/null)
+    OPENSSL_FILE=$(find /opt/shadowsocks-env -name openssl.py | grep shadowsocks/crypto/openssl.py 2>/dev/null)
     if [ -z "$OPENSSL_FILE" ]; then
         handle_error "找不到 OpenSSL 文件"
     fi
@@ -101,8 +102,6 @@ fix_openssl() {
 # 启动服务
 start_service() {
     echo -e "${GREEN}[5/5] 正在启动服务...${NC}"
-    # 确保 ssserver 在 PATH 中
-    export PATH=$PATH:$HOME/.local/bin:/usr/local/bin
     
     # 停止现有服务
     ssserver -c /etc/shadowsocks.json -d stop >/dev/null 2>&1
