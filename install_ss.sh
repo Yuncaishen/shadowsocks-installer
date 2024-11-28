@@ -41,12 +41,25 @@ install_dependencies() {
 # 安装 Shadowsocks
 install_shadowsocks() {
     echo -e "${GREEN}[2/5] 正在安装 Shadowsocks...${NC}"
-    pip3 install --upgrade pip || handle_error "pip 更新失败"
-    pip3 install shadowsocks || handle_error "Shadowsocks 安装失败"
+    
+    # 使用 --break-system-packages 参数安装
+    pip3 install --break-system-packages shadowsocks || {
+        echo -e "${YELLOW}尝试替代安装方法...${NC}"
+        python3 -m pip install --user shadowsocks || handle_error "Shadowsocks 安装失败"
+    }
+    
+    # 添加到 PATH
+    export PATH=$PATH:$HOME/.local/bin:/usr/local/bin
     
     # 验证安装
     if ! command -v ssserver &> /dev/null; then
-        handle_error "Shadowsocks 安装失败，ssserver 命令不可用"
+        # 尝试找到 ssserver 的位置
+        SSSERVER_PATH=$(find / -name ssserver 2>/dev/null | head -n 1)
+        if [ -n "$SSSERVER_PATH" ]; then
+            ln -sf "$SSSERVER_PATH" /usr/local/bin/ssserver
+        else
+            handle_error "Shadowsocks 安装失败，ssserver 命令不可用"
+        fi
     fi
 }
 
@@ -74,20 +87,27 @@ EOF
 # 修复 OpenSSL 问题
 fix_openssl() {
     echo -e "${GREEN}[4/5] 正在修复 OpenSSL 问题...${NC}"
-    OPENSSL_FILE="/usr/local/lib/python3.9/site-packages/shadowsocks/crypto/openssl.py"
-    if [ ! -f "$OPENSSL_FILE" ]; then
-        OPENSSL_FILE=$(find / -name openssl.py | grep shadowsocks/crypto/openssl.py)
-        if [ -z "$OPENSSL_FILE" ]; then
-            handle_error "找不到 OpenSSL 文件"
-        fi
+    # 查找 openssl.py 文件
+    OPENSSL_FILE=$(find / -name openssl.py | grep shadowsocks/crypto/openssl.py 2>/dev/null)
+    if [ -z "$OPENSSL_FILE" ]; then
+        handle_error "找不到 OpenSSL 文件"
     fi
+    
+    # 修复文件
     sed -i 's/EVP_CIPHER_CTX_cleanup/EVP_CIPHER_CTX_reset/g' "$OPENSSL_FILE" || handle_error "OpenSSL 修复失败"
+    echo -e "${GREEN}OpenSSL 文件已修复：$OPENSSL_FILE${NC}"
 }
 
 # 启动服务
 start_service() {
     echo -e "${GREEN}[5/5] 正在启动服务...${NC}"
+    # 确保 ssserver 在 PATH 中
+    export PATH=$PATH:$HOME/.local/bin:/usr/local/bin
+    
+    # 停止现有服务
     ssserver -c /etc/shadowsocks.json -d stop >/dev/null 2>&1
+    
+    # 启动服务
     ssserver -c /etc/shadowsocks.json -d start || handle_error "服务启动失败"
     
     # 验证服务是否启动
