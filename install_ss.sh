@@ -12,54 +12,47 @@ handle_error() {
     exit 1
 }
 
-# 检查命令是否存在
-check_command() {
-    if ! command -v $1 &> /dev/null; then
-        handle_error "命令 $1 未找到，请检查安装"
-    fi
-}
-
-# 检查端口是否可用
-check_port() {
-    if netstat -tuln | grep ":$1 " >/dev/null 2>&1; then
-        handle_error "端口 $1 已被占用"
-    fi
-}
-
-# 检查网络连接
-check_network() {
-    echo -e "${YELLOW}正在检查网络连接...${NC}"
-    if ! curl -s --connect-timeout 5 http://checkip.amazonaws.com > /dev/null; then
-        handle_error "网络连接失败，请检查网络设置"
-    fi
-    echo -e "${GREEN}网络连接正常${NC}"
-}
-
 # 安装必要的包
 install_dependencies() {
     echo -e "${GREEN}[1/5] 正在安装依赖...${NC}"
-    yum update -y || handle_error "系统更新失败"
-    yum install python3 python3-pip curl net-tools -y || handle_error "依赖安装失败"
     
-    # 检查安装结果
-    for cmd in python3 pip3 curl netstat; do
-        check_command $cmd
+    # 清理并更新系统
+    echo -e "${YELLOW}正在更新系统...${NC}"
+    yum clean all
+    yum update -y --skip-broken || handle_error "系统更新失败"
+    
+    # 安装依赖包
+    echo -e "${YELLOW}正在安装依赖包...${NC}"
+    for package in python3 python3-pip curl net-tools; do
+        echo -e "${YELLOW}正在安装 $package...${NC}"
+        yum install -y --allowerasing $package || handle_error "安装 $package 失败"
     done
+    
+    # 验证安装
+    for cmd in python3 pip3 curl netstat; do
+        if ! command -v $cmd &> /dev/null; then
+            handle_error "$cmd 未能正确安装"
+        fi
+    done
+    
     echo -e "${GREEN}依赖安装完成${NC}"
 }
 
 # 安装 Shadowsocks
 install_shadowsocks() {
     echo -e "${GREEN}[2/5] 正在安装 Shadowsocks...${NC}"
+    pip3 install --upgrade pip || handle_error "pip 更新失败"
     pip3 install shadowsocks || handle_error "Shadowsocks 安装失败"
-    check_command ssserver
-    echo -e "${GREEN}Shadowsocks 安装完成${NC}"
+    
+    # 验证安装
+    if ! command -v ssserver &> /dev/null; then
+        handle_error "Shadowsocks 安装失败，ssserver 命令不可用"
+    fi
 }
 
 # 创建配置文件
 create_config() {
     echo -e "${GREEN}[3/5] 正在创建配置文件...${NC}"
-    check_port 8388
     cat > /etc/shadowsocks.json << EOF || handle_error "配置文件创建失败"
 {
     "server": "0.0.0.0",
@@ -71,10 +64,11 @@ create_config() {
     "fast_open": false
 }
 EOF
+
+    # 验证配置文件
     if [ ! -f /etc/shadowsocks.json ]; then
         handle_error "配置文件不存在"
     fi
-    echo -e "${GREEN}配置文件创建完成${NC}"
 }
 
 # 修复 OpenSSL 问题
@@ -82,23 +76,25 @@ fix_openssl() {
     echo -e "${GREEN}[4/5] 正在修复 OpenSSL 问题...${NC}"
     OPENSSL_FILE="/usr/local/lib/python3.9/site-packages/shadowsocks/crypto/openssl.py"
     if [ ! -f "$OPENSSL_FILE" ]; then
-        handle_error "OpenSSL 文件不存在"
+        OPENSSL_FILE=$(find / -name openssl.py | grep shadowsocks/crypto/openssl.py)
+        if [ -z "$OPENSSL_FILE" ]; then
+            handle_error "找不到 OpenSSL 文件"
+        fi
     fi
     sed -i 's/EVP_CIPHER_CTX_cleanup/EVP_CIPHER_CTX_reset/g' "$OPENSSL_FILE" || handle_error "OpenSSL 修复失败"
-    echo -e "${GREEN}OpenSSL 修复完成${NC}"
 }
 
 # 启动服务
 start_service() {
     echo -e "${GREEN}[5/5] 正在启动服务...${NC}"
+    ssserver -c /etc/shadowsocks.json -d stop >/dev/null 2>&1
     ssserver -c /etc/shadowsocks.json -d start || handle_error "服务启动失败"
     
-    # 检查服务是否正在运行
+    # 验证服务是否启动
     sleep 2
     if ! netstat -ntlp | grep ":8388 " > /dev/null; then
         handle_error "服务未能正常启动"
     fi
-    echo -e "${GREEN}服务启动完成${NC}"
 }
 
 # 生成 SS URI 链接
@@ -133,17 +129,13 @@ check_root() {
     fi
 }
 
-# 检查 AWS 安全组设置
-check_aws_security_group() {
-    echo -e "${YELLOW}请确保已在 AWS 安全组中添加以下规则：${NC}"
-    echo -e "类型：自定义 TCP"
-    echo -e "端口：8388"
-    echo -e "来源：0.0.0.0/0"
-    read -p "已确认安全组设置？(y/n) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        handle_error "请先配置 AWS 安全组"
+# 检查网络连接
+check_network() {
+    echo -e "${YELLOW}正在检查网络连接...${NC}"
+    if ! curl -s --connect-timeout 5 http://checkip.amazonaws.com > /dev/null; then
+        handle_error "网络连接失败，请检查网络设置"
     fi
+    echo -e "${GREEN}网络连接正常${NC}"
 }
 
 # 主函数
@@ -152,7 +144,6 @@ main() {
     echo -e "${GREEN}开始安装 Shadowsocks...${NC}"
     check_root
     check_network
-    check_aws_security_group
     install_dependencies
     install_shadowsocks
     create_config
